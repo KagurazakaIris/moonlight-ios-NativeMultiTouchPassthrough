@@ -40,6 +40,10 @@ jobs:
         run: |
           sed -i '' 's/PRODUCT_BUNDLE_IDENTIFIER = .*;/PRODUCT_BUNDLE_IDENTIFIER = com.seele.moonlight;/' Moonlight.xcodeproj/project.pbxproj
 
+      - name: Patch Team ID
+        run: |
+          sed -i '' 's/DevelopmentTeam = FRL23UV4N9;/DevelopmentTeam = ZNVDEVDRX3;/g' Moonlight.xcodeproj/project.pbxproj
+
       - name: Build and Sign FullScreen Version
         run: |
           plutil -replace UIRequiresFullScreen -bool true Limelight/Limelight-Info.plist
