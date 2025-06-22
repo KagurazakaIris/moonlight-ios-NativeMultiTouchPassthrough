@@ -49,8 +49,8 @@ jobs:
       - name: Set Release Version
         id: set_version
         run: |
-          TZ=Asia/Shanghai
-          version="v$(date -u '+%Y-%m-%dT%H-%M-%SZ' -d '8 hour')"
+          export TZ=Asia/Shanghai
+          version="v$(date +'%Y-%m-%dT%H-%M-%S')"
           echo "RELEASE_VERSION=$version" >> $GITHUB_ENV
 
       - name: Create Release
@@ -63,4 +63,3 @@ jobs:
             build/Moonlight-ZWM_StageManager.ipa
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
