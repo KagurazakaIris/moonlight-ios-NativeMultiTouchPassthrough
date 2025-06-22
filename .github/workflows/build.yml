@@ -1,87 +1,91 @@
-name: Build and Sign IPAs
+name: Build iOS App
 
 on:
   push:
-    branches: [ "noWaterMark" ]
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
   build:
-    name: Build and Sign iOS IPAs
-    runs-on: macos-latest
-    if: github.ref == 'refs/heads/noWaterMark'
+    runs-on: macos-14
 
     steps:
-      - name: Checkout Source Code
-        uses: actions/checkout@v3
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-      - name: Checkout Submodules
-        run: git submodule update --init --recursive
-
-      - name: Setup Code Signing
+      - name: Set up Keychain & Certificates
+        env:
+          P12_PASSWORD: ${{ secrets.IOS_P12_PASSWORD }}
         run: |
-          CERT_PATH=$RUNNER_TEMP/cert.p12
-          PROFILE_PATH=$RUNNER_TEMP/profile.mobileprovision
+          echo "$IOS_P12_BASE64" | base64 --decode > certificate.p12
+          security create-keychain -p "build" ios-build.keychain
+          security default-keychain -s ios-build.keychain
+          security unlock-keychain -p "build" ios-build.keychain
+          security import certificate.p12 -k ios-build.keychain -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "build" ios-build.keychain
 
-          echo "${{ secrets.IOS_P12_BASE64 }}" | base64 --decode > "$CERT_PATH"
-          echo "${{ secrets.IOS_PROVISION_BASE64 }}" | base64 --decode > "$PROFILE_PATH"
-
-          security create-keychain -p "" build.keychain
-          security default-keychain -s build.keychain
-          security unlock-keychain -p "" build.keychain
-          security import "$CERT_PATH" -P "${{ secrets.IOS_P12_PASSWORD }}" -A -t cert -f pkcs12
-          security set-key-partition-list -S apple-tool:,apple: -s -k "" build.keychain
-
+      - name: Install Provisioning Profile
+        run: |
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          uuid=$(/usr/libexec/PlistBuddy -c 'Print :UUID' /dev/stdin <<< $(security cms -D -i "$PROFILE_PATH"))
-          cp "$PROFILE_PATH" ~/Library/MobileDevice/Provisioning\ Profiles/$uuid.mobileprovision
+          echo "$IOS_PROVISION_BASE64" | base64 --decode > profile.mobileprovision
+          UUID=$(/usr/libexec/PlistBuddy -c 'Print :UUID' /dev/stdin <<< $(/usr/bin/security cms -D -i profile.mobileprovision))
+          cp profile.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/$UUID.mobileprovision
 
-      - name: Set Bundle Identifier to match Provisioning Profile
+      - name: Patch pbxproj with correct signing info
         run: |
-          sed -i '' 's/PRODUCT_BUNDLE_IDENTIFIER = .*;/PRODUCT_BUNDLE_IDENTIFIER = com.seele.moonlight;/' Moonlight.xcodeproj/project.pbxproj
-      - name: Patch Code Signing in pbxproj
-        run: |
-          TEAM_ID="ZNVDEVDRX3"
-          PROFILE_NAME="${{ secrets.PROFILE_NAME }}"
-          sed -i '' "s/DevelopmentTeam = .*;/DevelopmentTeam = $TEAM_ID;/g" Moonlight.xcodeproj/project.pbxproj
-          sed -i '' "s/DEVELOPMENT_TEAM = .*;/DEVELOPMENT_TEAM = $TEAM_ID;/g" Moonlight.xcodeproj/project.pbxproj
-          sed -i '' "s/PROVISIONING_PROFILE_SPECIFIER = .*;/PROVISIONING_PROFILE_SPECIFIER = \"$PROFILE_NAME\";/g" Moonlight.xcodeproj/project.pbxproj
-          # 如果之前有绑定 UUID 的描述文件，建议移除
-          sed -i '' "/PROVISIONING_PROFILE = /d" Moonlight.xcodeproj/project.pbxproj
+          sed -i '' 's/DevelopmentTeam = .*;/DevelopmentTeam = ZNVDEVDRX3;/g' Moonlight.xcodeproj/project.pbxproj
+          sed -i '' 's/DEVELOPMENT_TEAM = .*;/DEVELOPMENT_TEAM = ZNVDEVDRX3;/g' Moonlight.xcodeproj/project.pbxproj
+          sed -i '' 's/PROVISIONING_PROFILE_SPECIFIER = .*;/PROVISIONING_PROFILE_SPECIFIER = "Moonlight iOS App Store";/g' Moonlight.xcodeproj/project.pbxproj
+          sed -i '' '/PROVISIONING_PROFILE = /d' Moonlight.xcodeproj/project.pbxproj
 
-      - name: Build and Sign FullScreen Version
+      - name: Build and Archive App
         run: |
           plutil -replace UIRequiresFullScreen -bool true Limelight/Limelight-Info.plist
-          xcodebuild -scheme Moonlight-ZWM -sdk iphoneos -configuration AppStoreDistribution \
-            -archivePath $PWD/build/MoonlightFullScreen.xcarchive \
+
+          xcodebuild clean archive \
+            -workspace Moonlight.xcworkspace \
+            -scheme Moonlight-ZWM \
+            -configuration AppStoreDistribution \
+            -sdk iphoneos \
+            -archivePath build/MoonlightFullScreen.xcarchive \
             CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="${{ secrets.CODE_SIGN_IDENTITY }}" \
-            PROVISIONING_PROFILE_SPECIFIER="${{ secrets.PROFILE_NAME }}"
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER="Moonlight iOS App Store" \
+            DEVELOPMENT_TEAM=ZNVDEVDRX3
 
-          mkdir -p build/IPA_FullScreen/Payload
-          cp -r build/MoonlightFullScreen.xcarchive/Products/Applications/Moonlight-ZWM.app build/IPA_FullScreen/Payload/
-          codesign -f -s "${{ secrets.CODE_SIGN_IDENTITY }}" --timestamp=none build/IPA_FullScreen/Payload/Moonlight-ZWM.app
-          cd build/IPA_FullScreen && zip -r ../Moonlight-ZWM_FullScreen.ipa Payload && cd ../..
+      - name: Export IPA
+        run: |
+          cat > ExportOptions.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+          "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>app-store</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>teamID</key>
+            <string>ZNVDEVDRX3</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>com.seele.moonlight</key>
+              <string>Moonlight iOS App Store</string>
+            </dict>
+          </dict>
+          </plist>
+          EOF
 
-      - name: Upload FullScreen IPA to Artifact
+          xcodebuild -exportArchive \
+            -archivePath build/MoonlightFullScreen.xcarchive \
+            -exportOptionsPlist ExportOptions.plist \
+            -exportPath build/exported_ipa
+
+      - name: Upload IPA Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Moonlight-ZWM_FullScreen.ipa
-          path: build/Moonlight-ZWM_FullScreen.ipa
-
-      - name: Build and Sign StageManager Version
-        run: |
-          plutil -replace UIRequiresFullScreen -bool false Limelight/Limelight-Info.plist
-          xcodebuild -scheme Moonlight-ZWM -sdk iphoneos -configuration AppStoreDistribution \
-            -archivePath $PWD/build/MoonlightStageManager.xcarchive \
-            CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="${{ secrets.CODE_SIGN_IDENTITY }}" \
-            PROVISIONING_PROFILE_SPECIFIER="${{ secrets.PROFILE_NAME }}"
-
-          mkdir -p build/IPA_StageManager/Payload
-          cp -r build/MoonlightStageManager.xcarchive/Products/Applications/Moonlight-ZWM.app build/IPA_StageManager/Payload/
-          codesign -f -s "${{ secrets.CODE_SIGN_IDENTITY }}" --timestamp=none build/IPA_StageManager/Payload/Moonlight-ZWM.app
-          cd build/IPA_StageManager && zip -r ../Moonlight-ZWM_StageManager.ipa Payload && cd ../..
+          name: Moonlight-iOS-FullScreen
+          path: build/exported_ipa/*.ipa
 
       - name: Upload StageManager IPA to Artifact
         uses: actions/upload-artifact@v4
