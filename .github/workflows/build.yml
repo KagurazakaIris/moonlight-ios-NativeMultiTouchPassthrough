@@ -36,10 +36,19 @@ jobs:
           uuid=$(/usr/libexec/PlistBuddy -c 'Print :UUID' /dev/stdin <<< $(security cms -D -i "$PROFILE_PATH"))
           cp "$PROFILE_PATH" ~/Library/MobileDevice/Provisioning\ Profiles/$uuid.mobileprovision
 
+      - name: Set Bundle Identifier to match Provisioning Profile
+        run: |
+          sed -i '' 's/PRODUCT_BUNDLE_IDENTIFIER = .*;/PRODUCT_BUNDLE_IDENTIFIER = com.seele.moonlight;/' Moonlight.xcodeproj/project.pbxproj
+
       - name: Build and Sign FullScreen Version
         run: |
           plutil -replace UIRequiresFullScreen -bool true Limelight/Limelight-Info.plist
-          xcodebuild -verbose -scheme Moonlight-ZWM -sdk iphoneos -configuration AppStoreDistribution archive -archivePath $PWD/build/MoonlightFullScreen.xcarchive
+          xcodebuild -scheme Moonlight-ZWM -sdk iphoneos -configuration AppStoreDistribution \
+            -archivePath $PWD/build/MoonlightFullScreen.xcarchive \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="${{ secrets.CODE_SIGN_IDENTITY }}" \
+            PROVISIONING_PROFILE_SPECIFIER="${{ secrets.PROFILE_NAME }}"
+
           mkdir -p build/IPA_FullScreen/Payload
           cp -r build/MoonlightFullScreen.xcarchive/Products/Applications/Moonlight-ZWM.app build/IPA_FullScreen/Payload/
           codesign -f -s "${{ secrets.CODE_SIGN_IDENTITY }}" --timestamp=none build/IPA_FullScreen/Payload/Moonlight-ZWM.app
@@ -54,7 +63,12 @@ jobs:
       - name: Build and Sign StageManager Version
         run: |
           plutil -replace UIRequiresFullScreen -bool false Limelight/Limelight-Info.plist
-          xcodebuild -verbose -scheme Moonlight-ZWM -sdk iphoneos -configuration AppStoreDistribution archive -archivePath $PWD/build/MoonlightStageManager.xcarchive
+          xcodebuild -scheme Moonlight-ZWM -sdk iphoneos -configuration AppStoreDistribution \
+            -archivePath $PWD/build/MoonlightStageManager.xcarchive \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="${{ secrets.CODE_SIGN_IDENTITY }}" \
+            PROVISIONING_PROFILE_SPECIFIER="${{ secrets.PROFILE_NAME }}"
+
           mkdir -p build/IPA_StageManager/Payload
           cp -r build/MoonlightStageManager.xcarchive/Products/Applications/Moonlight-ZWM.app build/IPA_StageManager/Payload/
           codesign -f -s "${{ secrets.CODE_SIGN_IDENTITY }}" --timestamp=none build/IPA_StageManager/Payload/Moonlight-ZWM.app
