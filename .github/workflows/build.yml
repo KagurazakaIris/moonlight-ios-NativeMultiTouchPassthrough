@@ -1,58 +1,78 @@
-name: Build IPAs
+name: Build and Sign IPAs
 
 on:
   push:
     branches: [ "noWaterMark" ]
-  workflow_dispatch: # 支持手动触发
+  workflow_dispatch:
 
 jobs:
   build:
-    name: Build IPAs
+    name: Build and Sign iOS IPAs
     runs-on: macos-latest
-    if: github.ref == 'refs/heads/noWaterMark' # 仅在 noWaterMark 分支运行
+    if: github.ref == 'refs/heads/noWaterMark'
 
     steps:
-      - name: Checkout
+      - name: Checkout Source Code
         uses: actions/checkout@v3
 
-      - name: Checkout submodules
+      - name: Checkout Submodules
         run: git submodule update --init --recursive
 
-      - name: Build FullScreen Version
+      - name: Setup Code Signing
+        run: |
+          CERT_PATH=$RUNNER_TEMP/cert.p12
+          PROFILE_PATH=$RUNNER_TEMP/profile.mobileprovision
+
+          echo "${{ secrets.IOS_P12_BASE64 }}" | base64 --decode > "$CERT_PATH"
+          echo "${{ secrets.IOS_PROVISION_BASE64 }}" | base64 --decode > "$PROFILE_PATH"
+
+          security create-keychain -p "" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "" build.keychain
+          security import "$CERT_PATH" -P "${{ secrets.IOS_P12_PASSWORD }}" -A -t cert -f pkcs12
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" build.keychain
+
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          uuid=$(/usr/libexec/PlistBuddy -c 'Print :UUID' /dev/stdin <<< $(security cms -D -i "$PROFILE_PATH"))
+          cp "$PROFILE_PATH" ~/Library/MobileDevice/Provisioning\ Profiles/$uuid.mobileprovision
+
+      - name: Build and Sign FullScreen Version
         run: |
           plutil -replace UIRequiresFullScreen -bool true Limelight/Limelight-Info.plist
-          xcodebuild -verbose -scheme Moonlight-ZWM -sdk iphoneos -configuration AppStoreDistribution archive -archivePath $PWD/build/MoonlightFullScreen.xcarchive CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
-          mkdir -p ./build/IPA_FullScreen && mkdir -p ./build/IPA_FullScreen/Payload
-          cp -r ./build/MoonlightFullScreen.xcarchive/Products/Applications/Moonlight-ZWM.app ./build/IPA_FullScreen/Payload/Moonlight-ZWM.app
-          cd ./build/IPA_FullScreen && zip -r ../../build/Moonlight-ZWM_FullScreen.ipa ./Payload/* && cd ../..
+          xcodebuild -verbose -scheme Moonlight-ZWM -sdk iphoneos -configuration AppStoreDistribution archive -archivePath $PWD/build/MoonlightFullScreen.xcarchive
+          mkdir -p build/IPA_FullScreen/Payload
+          cp -r build/MoonlightFullScreen.xcarchive/Products/Applications/Moonlight-ZWM.app build/IPA_FullScreen/Payload/
+          codesign -f -s "${{ secrets.CODE_SIGN_IDENTITY }}" --timestamp=none build/IPA_FullScreen/Payload/Moonlight-ZWM.app
+          cd build/IPA_FullScreen && zip -r ../Moonlight-ZWM_FullScreen.ipa Payload && cd ../..
 
-      - name: Upload FullScreen IPA to Artifacts
+      - name: Upload FullScreen IPA to Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Moonlight-ZWM_FullScreen.ipa
           path: build/Moonlight-ZWM_FullScreen.ipa
 
-      - name: Build StageManager Version
+      - name: Build and Sign StageManager Version
         run: |
           plutil -replace UIRequiresFullScreen -bool false Limelight/Limelight-Info.plist
-          xcodebuild -verbose -scheme Moonlight-ZWM -sdk iphoneos -configuration AppStoreDistribution archive -archivePath $PWD/build/MoonlightStageManager.xcarchive CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
-          mkdir -p ./build/IPA_StageManager && mkdir -p ./build/IPA_StageManager/Payload
-          cp -r ./build/MoonlightStageManager.xcarchive/Products/Applications/Moonlight-ZWM.app ./build/IPA_StageManager/Payload/Moonlight-ZWM.app
-          cd ./build/IPA_StageManager && zip -r ../../build/Moonlight-ZWM_StageManager.ipa ./Payload/* && cd ../..
+          xcodebuild -verbose -scheme Moonlight-ZWM -sdk iphoneos -configuration AppStoreDistribution archive -archivePath $PWD/build/MoonlightStageManager.xcarchive
+          mkdir -p build/IPA_StageManager/Payload
+          cp -r build/MoonlightStageManager.xcarchive/Products/Applications/Moonlight-ZWM.app build/IPA_StageManager/Payload/
+          codesign -f -s "${{ secrets.CODE_SIGN_IDENTITY }}" --timestamp=none build/IPA_StageManager/Payload/Moonlight-ZWM.app
+          cd build/IPA_StageManager && zip -r ../Moonlight-ZWM_StageManager.ipa Payload && cd ../..
 
-      - name: Upload StageManager IPA to Artifacts
+      - name: Upload StageManager IPA to Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Moonlight-ZWM_StageManager.ipa
           path: build/Moonlight-ZWM_StageManager.ipa
 
       - name: Set Release Version (Beijing Time)
-        id: set_version
+        id: version
         run: |
           version="v$(python3 -c "from datetime import datetime, timedelta; print((datetime.utcnow() + timedelta(hours=8)).strftime('%Y-%m-%dT%H-%M-%S'))")"
           echo "RELEASE_VERSION=$version" >> $GITHUB_ENV
 
-      - name: Create Release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_VERSION }}
